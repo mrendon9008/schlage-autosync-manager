@@ -1,6 +1,12 @@
 # Schlage Auto-Sync Manager
 
-Self-hosted Schlage lock manager for short-term rental hosts. Manage access codes across all your locks, sync parent-to-child automatically, and cut out expensive property management software that charges per lock.
+Self-hosted Schlage lock manager — save money evert month on property management smart lock fees.
+
+Most rental platforms and property management systems charge per lock for access code management. If you have multiple locks on one property, you're paying for each one. This application allows you to only pay for one lock (parent lock) per rental. Any other locks (child locks) at the rental automatically inherit access code creations, edits, and deletions. Making it unnecssary to pay for more than one lock per rental.
+
+This app connects directly to Schlage's API. Set up one lock in your PMS, and automatically push access codes to every other lock on that property — without paying for each lock.
+
+Built for tech-minded short-term rental hosts who want to cut software costs without giving up automation.
 
 Built on Schlage's unofficial API.
 

@@ -47,7 +47,9 @@ Then open `http://localhost:8000` in your browser.
 1. Enter your Schlage account email and password
 2. Create your first lock group
 3. Assign your Schlage locks to the group
-4. Start creating access codes
+4. Assign a parent lock in each group
+5. Set auto sync times to each group, or use the tool to assign 144 syncs per day to a group in bulk at once (every 10 minutes)
+6. Start creating, editing, and deleting access codes on the parent lock of each group, and watch all children locks inherit the changes
 
 ## Auto Sync
 

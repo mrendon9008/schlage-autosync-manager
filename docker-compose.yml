@@ -1,0 +1,14 @@
+services:
+  schlage-app:
+    build: .
+    container_name: schlage-app
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - schlage-data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+
+volumes:
+  schlage-data:

@@ -53,7 +53,7 @@ Then open `http://localhost:8000` in your browser.
 
 ## Auto Sync
 
-The app can automatically sync codes on a schedule. Go to the **Sync** tab, select a check interval (0-144 times per day), and the app will keep your child locks in sync with the parent automatically.
+The app can automatically sync codes on a schedule. Go to the **Sync** tab, select a check interval (or bulk set 144 checks), and the app will keep your child locks in sync with the parent automatically at check times.
 
 ## Security
 
@@ -72,4 +72,4 @@ The app can automatically sync codes on a schedule. Go to the **Sync** tab, sele
 
 ## Disclaimer
 
-This app uses Schlage's unofficial/internal API. Schlage may change their API at any time, which could temporarily break this app. There is no guarantee of uptime or compatibility.
+This app uses Schlage's unofficial/internal API. Schlage may change their API at any time, which could temporarily break this app. There is no guarantee of uptime or compatibility. 

@@ -239,13 +239,12 @@ class SchlageSession:
         conn = get_db()
         try:
             conn.execute(
-                """INSERT INTO credentials (username, encrypted_password, nonce, is_owner)
-                   VALUES (?, ?, ?, 1)
+                """INSERT INTO credentials (username, encrypted_password, nonce)
+                   VALUES (?, ?, ?)
                    ON CONFLICT(username) DO UPDATE SET
                        encrypted_password = excluded.encrypted_password,
                        nonce = excluded.nonce,
-                       updated_at = CURRENT_TIMESTAMP,
-                       is_owner = 1""",
+                       updated_at = CURRENT_TIMESTAMP""",
                 (username, ciphertext, nonce),
             )
             conn.commit()
@@ -415,12 +414,7 @@ def get_current_session(request: Request) -> SchlageSession | None:
     current request. Re-authenticates using stored encrypted credentials.
     Returns None if no valid session cookie is present.
     """
-    # Try cookie first, then Authorization header (Bearer token from localStorage)
     token = request.cookies.get(SESSION_COOKIE_NAME)
-    if not token:
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
     if not token:
         return None
 
@@ -439,25 +433,8 @@ def get_current_session(request: Request) -> SchlageSession | None:
 
     # Build and return SchlageSession
     session = SchlageSession(session_row["username"])
-
-    # Look up encrypted credentials from credentials table (not session row)
-    username_from_session = session_row["username"]
-    conn = get_db()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT encrypted_password, nonce FROM credentials WHERE username = ?",
-            (username_from_session,),
-        )
-        cred_row = cur.fetchone()
-        if cred_row:
-            session._encrypted_password = cred_row["encrypted_password"]
-            session._nonce = cred_row["nonce"]
-        else:
-            session._encrypted_password = None
-            session._nonce = None
-    finally:
-        conn.close()
+    session._encrypted_password = session_row["encrypted_password"]
+    session._nonce = session_row["nonce"]
 
     # Restore auth state if already authenticated this request
     if _current_auth is not None:

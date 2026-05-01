@@ -140,7 +140,7 @@ def _discover_and_seed_jobs(session, group_id: int | None) -> None:
                         local_master[cname]["end_datetime"] = live_code["end_datetime"]
                         local_master[cname]["schlage_code_id"] = live_code["access_code_id"]
                 else:
-                    # New master code — INSERT into access_codes, then queue CREATE on children
+                    # New master code — INSERT into local DB first, then queue CREATE on children
                     logger.info("DEBUG NEW MASTER: '%s' NOT in local DB — inserting into access_codes", cname)
                     try:
                         sc_id = live_code.get("access_code_id") or live_code.get("id")

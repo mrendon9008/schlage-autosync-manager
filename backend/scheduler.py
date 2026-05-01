@@ -1,5 +1,4 @@
 """
-import traceback
 Background scheduler for V4 auto force sync.
 Replaces APScheduler with a precise, per-group check_time scheduler.
 """
@@ -11,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from backend.database import get_db, DB_PATH
+from backend.sync_logic import SyncEngine
 
 logger = logging.getLogger(__name__)
 
@@ -66,21 +66,11 @@ def seconds_until(target_dt: datetime) -> float:
 # ── Per-group sync runner ─────────────────────────────────────────────────────
 
 
-def run_group_sync(group_id: int, dry_run: bool = False) -> None:
-    """
-    Run the full Refresh + Force Sync sequence for a group.
-
-    This is the scheduler's equivalent of pressing Refresh then Force Sync.
-
-    Step 1 (Refresh-equivalent): _discover_and_seed_jobs() — detect changes in Schlage cloud
-                                  and seed pending sync_jobs (same path the UI uses)
-    Step 2 (Force Sync-equivalent): _scheduler_run_sync_jobs() — execute pending jobs
-    """
+def run_group_sync(group_id: int) -> None:
+    """Decrypt credentials and run the full refresh + force sync sequence."""
     try:
         import pyschlage
         from backend.auth import decrypt_password
-        from backend.routes import codes as codes_module
-        from backend.routes import sync as sync_module
 
         conn = get_db()
         try:
@@ -93,29 +83,15 @@ def run_group_sync(group_id: int, dry_run: bool = False) -> None:
                 return
             username = row["username"]
             password = decrypt_password(row["encrypted_password"], row["nonce"])
+            creds = {"username": username, "password": password}
         finally:
             conn.close()
 
-        # Create a full SchlageSession (with Schlage API object) the same way the UI does
-        from backend.auth import SchlageSession
-        session = SchlageSession.from_credentials(username, password)
-
-        # Step 1: discover and seed jobs (Refresh-equivalent — uses the exact same
-        # _discover_and_seed_jobs that Force Sync in the UI calls)
-        if not dry_run:
-            logger.info("Scheduler: discovering codes for group %s", group_id)
-            codes_module._discover_and_seed_jobs(session, group_id)
-
-        # Step 2: execute pending jobs (Force Sync-equivalent)
-        logger.info("Scheduler: running force sync for group %s (dry_run=%s)", group_id, dry_run)
-        result = sync_module._scheduler_run_sync_jobs(group_id, dry_run)
-        logger.info(
-            "Scheduler: sync completed for group %s — created=%s updated=%s deleted=%s failed=%s",
-            group_id, result.get("created", 0), result.get("updated", 0),
-            result.get("deleted", 0), result.get("failed", 0),
-        )
+        engine = SyncEngine(str(DB_PATH), pyschlage, creds)
+        engine.run_sync(group_id, dry_run=False)
+        logger.info("Scheduler: sync completed for group %s", group_id)
     except Exception as e:
-        logger.exception("Scheduler: sync failed for group %s", group_id)
+        logger.error("Scheduler: sync failed for group %s: %s", group_id, e)
 
 
 # ── Main scheduler loop ────────────────────────────────────────────────────────
@@ -132,15 +108,6 @@ class CheckTimeScheduler:
         self._running = False
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
-        # Per-group locks to prevent duplicate sync threads for the same group
-        self._group_locks: dict[int, threading.Lock] = {}
-
-    def _get_group_lock(self, group_id: int) -> threading.Lock:
-        """Get or create a lock for a specific group."""
-        with self._lock:
-            if group_id not in self._group_locks:
-                self._group_locks[group_id] = threading.Lock()
-            return self._group_locks[group_id]
 
     def _load_schedules(self) -> list[dict]:
         """Load all enabled schedules from DB."""
@@ -177,55 +144,34 @@ class CheckTimeScheduler:
                 next_run = next_run_time(check_times, now)
                 secs = seconds_until(next_run)
 
-                # Determine if this check_time should fire:
-                # - secs <= 5:        normal — within 5s of target, fire now
-                # - -60 < secs <= 0:  just missed — within last 60s, fire immediately
-                # - secs > 5:          future — log normally, schedule normally
-                # - secs <= -60:      way past — skip, already rolled to next occurrence
+                # Fire if within 5 seconds of target (accounts for 60s wake interval)
+                if secs <= 5:
+                    gid = sched["group_id"]
+                    logger.info("Scheduler: firing check_time for group %s", gid)
+                    # Run sync in a separate thread so tick doesn't block
+                    t = threading.Thread(target=run_group_sync, args=(gid,), daemon=True)
+                    t.start()
+                    # Recalculate next run after firing (it was today, next should be tomorrow)
+                    next_run = next_run_time(check_times, now)
+                    secs = seconds_until(next_run)
 
-                gid = sched["group_id"]
-                group_lock = self._get_group_lock(gid)
-
-                if secs < 0:
-                    # Past — fire immediately
-                    secs = 0.1
-                elif secs > 5:
-                    # Future — log and skip
-                    logger.info("Scheduler: group %s next fire in %.0f seconds (%s)", gid, secs, next_run.strftime("%H:%M"))
-                # Try to acquire the per-group lock — if already held, skip
-                acquired = group_lock.acquire(blocking=False)
-                if not acquired:
-                    logger.info(
-                        "Scheduler: group %s already syncing, skipping duplicate fire",
-                        gid,
-                    )
-                    continue
-
-                # Fire via threading.Timer
-                delay = secs if secs > 0.1 else 0.1
-                logger.info(
-                    "Scheduler: check_time for group %s firing (secs=%.1f)",
-                    gid, secs,
-                )
-
-                def delayed_group_sync(delay: float, group_id: int, group_lock: threading.Lock) -> None:
-                    try:
+                # Reschedule this group's next fire
+                if secs > 0:
+                    def delayed_group_sync(delay: float, gid: int) -> None:
                         time.sleep(delay)
                         if not self._stop_event.is_set():
-                            run_group_sync(group_id, dry_run=False)
-                    finally:
-                        group_lock.release()
+                            run_group_sync(gid)
 
-                gt = threading.Thread(
-                    target=delayed_group_sync,
-                    args=(delay, gid, group_lock),
-                    daemon=True,
-                )
-                gt.start()
-                logger.info(
-                    "Scheduler: group %s next fire in %.0f seconds (%s)",
-                    gid, secs, next_run.strftime("%H:%M"),
-                )
+                    gt = threading.Thread(
+                        target=delayed_group_sync,
+                        args=(secs, sched["group_id"]),
+                        daemon=True,
+                    )
+                    gt.start()
+                    logger.info(
+                        "Scheduler: group %s next fire in %.0f seconds (%s)",
+                        sched["group_id"], secs, next_run.strftime("%H:%M"),
+                    )
 
         except Exception as e:
             logger.error("Scheduler: tick error: %s", e)

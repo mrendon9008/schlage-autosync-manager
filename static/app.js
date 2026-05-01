@@ -342,18 +342,12 @@ function renderDashboard() {
           <div class="tab ${state.activeTab === 'sync' ? 'active' : ''}" data-tab="sync" data-drawer-close>
             <i data-lucide="refresh-cw" style="width:16px;height:16px;"></i> Sync
           </div>
-          <div class="tab ${state.activeTab === 'help' ? 'active' : ''}" data-tab="help" data-drawer-close>
-            <i data-lucide="help-circle" style="width:16px;height:16px;"></i> Help
-          </div>
         </div>
         <div class="drawer-footer">
           <div class="navbar-avatar" id="userAvatarDrawer">${initials}</div>
           <span class="drawer-username">${state.user?.username || 'User'}</span>
           <button class="user-dropdown-item danger" id="logoutBtnDrawer">
             <i data-lucide="log-out" style="width:16px;height:16px;"></i> Sign Out
-          </button>
-          <button class="user-dropdown-item danger" id="disconnectBtnDrawer">
-            <i data-lucide="unplug" style="width:16px;height:16px;"></i> Disconnect & Clear All Data
           </button>
         </div>
       </div>
@@ -368,9 +362,6 @@ function renderDashboard() {
 
             <i data-lucide="log-out" style="width:16px;height:16px;"></i> Sign Out
 
-          </button>
-          <button class="user-dropdown-item danger" id="disconnectBtn">
-            <i data-lucide="unplug" style="width:16px;height:16px;"></i> Disconnect & Clear All Data
           </button>
 
         </div>
@@ -404,12 +395,6 @@ function renderDashboard() {
         <div class="tab ${state.activeTab === 'sync' ? 'active' : ''}" data-tab="sync">
 
           <i data-lucide="refresh-cw" style="width:16px;height:16px;"></i> Sync
-
-        </div>
-
-        <div class="tab ${state.activeTab === 'help' ? 'active' : ''}" data-tab="help">
-
-          <i data-lucide="help-circle" style="width:16px;height:16px;"></i> Help
 
         </div>
 
@@ -472,12 +457,6 @@ function renderDashboard() {
   // Sign out from drawer
   document.getElementById('logoutBtnDrawer')?.addEventListener('click', logout);
 
-  // Disconnect & clear all data (drawer)
-  document.getElementById('disconnectBtnDrawer')?.addEventListener('click', showDisconnectModal);
-
-  // Disconnect & clear all data (desktop)
-  document.getElementById('disconnectBtn')?.addEventListener('click', showDisconnectModal);
-
   // ── Desktop tab click ────────────────────────────────────────────────
 
   document.querySelectorAll('.tab').forEach(tab => {
@@ -512,8 +491,6 @@ function renderTabContent() {
   else if (state.activeTab === 'codes') renderCodesPage(container);
 
   else if (state.activeTab === 'sync') renderSyncPage(container);
-
-  else if (state.activeTab === 'help') renderHelpPage(container);
 
 }
 
@@ -1465,53 +1442,6 @@ function updateToggleState(modal, on) {
 }
 
 
-
-async function showDisconnectModal() {
-  const modal = document.createElement('div');
-  modal.className = 'modal-backdrop';
-  modal.innerHTML = `
-    <div class="modal-panel" style="max-width:420px">
-      <div class="modal-header">
-        <h3 class="modal-title" style="color:var(--status-error)">⚠️ Disconnect & Clear All Data</h3>
-        <button class="btn btn-ghost btn-icon modal-close"><i data-lucide="x" style="width:18px;height:18px;"></i></button>
-      </div>
-      <div class="modal-body">
-        <p style="margin-bottom:16px">This will <strong>permanently delete</strong>:</p>
-        <ul style="margin-left:20px;margin-bottom:16px;line-height:1.8">
-          <li>Your stored Schlage credentials</li>
-          <li>All groups and lock assignments</li>
-          <li>All access codes and sync history</li>
-          <li>All scheduled sync jobs</li>
-        </ul>
-        <p style="margin-bottom:0;color:var(--text-muted)">After this you will see a blank login screen. Enter your Schlage credentials again to reconnect.</p>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-primary btn-full" id="confirmDisconnectBtn" style="background:#dc2626;border:1px solid #dc2626;color:#fff">Yes, Clear Everything</button>
-        <button class="btn btn-ghost btn-full modal-close">Cancel</button>
-      </div>
-    </div>`;
-  document.body.appendChild(modal);
-  lucide.createIcons();
-  modal.querySelector('.modal-close').addEventListener('click', () => modal.remove());
-  modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
-  document.getElementById('confirmDisconnectBtn').addEventListener('click', async () => {
-    modal.remove();
-    try {
-      await api('/auth/disconnect', { method: 'POST' });
-    } catch { /* endpoint still clears local data even on network errors */ }
-    localStorage.removeItem('schlage_session');
-    state.loggedIn = false;
-    state.user = null;
-    state.locks = [];
-    state.groups = [];
-    state.codes = [];
-    state.selectedGroup = null;
-    state.selectedCodes.clear();
-    toast('All data cleared', 'info');
-    renderLogin();
-  });
-}
-
 // ─── LOGOUT ───────────────────────────────────────────────────────────────────
 
 async function logout() {
@@ -1825,13 +1755,6 @@ function renderSyncContent(container, groups, schedules, allPending, recentSyncs
 
       <div class="sync-add-time">
 
-        <div class="sync-quick-set">
-          <span class="sync-quick-set-label">Quick Set — every 10 min, ending in:</span>
-          <div class="sync-quick-set-btns">
-            ${[0,1,2,3,4,5,6,7,8,9].map(d => `<button class="btn btn-ghost quick-set-btn" data-group="${g.id}" data-digit="${d}">${d}</button>`).join('')}
-          </div>
-        </div>
-
         <div class="sync-add-time">
 
           <input type="time" class="form-input new-time-input" id="new-time-${g.id}" />
@@ -1881,11 +1804,13 @@ function renderSyncContent(container, groups, schedules, allPending, recentSyncs
 
       const url = '/sync/schedules?group_id=' + groupId + '&check_time=' + encodeURIComponent(timeVal);
 
+      alert('POST to: ' + url);
 
       try {
 
         const res = await api(url, { method: 'POST' });
 
+        alert('saved! check_times=' + JSON.stringify(res?.schedule?.check_times));
 
         toast('Time added', 'success');
 
@@ -1903,40 +1828,6 @@ function renderSyncContent(container, groups, schedules, allPending, recentSyncs
 
   });
 
-
-
-  container.querySelectorAll('.quick-set-btn').forEach((btn) => {
-    btn.addEventListener('click', async () => {
-      const groupId = parseInt(btn.dataset.group, 10);
-      const digit = parseInt(btn.dataset.digit, 10);
-
-      const times = [];
-      for (let h = 0; h < 24; h++) {
-        for (let offset = 0; offset < 60; offset += 10) {
-          const m = digit + offset;
-          if (m < 60) {
-            times.push(`${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`);
-          }
-        }
-      }
-
-      const unique = [...new Set(times)].sort();
-      const groupName = groups.find(g => g.id === groupId)?.name || ('Group ' + groupId);
-
-      if (!confirm(`Set ${unique.length} check times for ${groupName}? All times end in :${String(digit).padStart(2,'0')}. This will replace all existing times.`)) return;
-
-      try {
-        await api(`/sync/schedules?group_id=${groupId}`, {
-          method: 'POST',
-          body: JSON.stringify({ check_times: unique }),
-        });
-        toast(`${unique.length} check times set`, 'success');
-        renderSyncPage(container);
-      } catch (e) {
-        toast('Failed to set times: ' + e.message, 'error');
-      }
-    });
-  });
 
   container.querySelectorAll('.remove-time-btn').forEach((btn) => {
 
@@ -2200,127 +2091,3 @@ slideStyle.textContent = `
 `;
 
 document.head.appendChild(slideStyle);
-
-// ─── HELP PAGE ─────────────────────────────────────────────────────────────────
-
-function renderHelpPage(container) {
-  container.innerHTML = `
-    <div class="page-header">
-      <div class="page-header-left">
-        <h1>Help & FAQ</h1>
-      </div>
-    </div>
-    <div class="help-content">
-
-      <section class="help-section">
-        <h2>Connecting Your Schlage Account</h2>
-        <p><strong>Step 1 — Enter your Schlage credentials</strong><br/>
-        On the login screen, enter the email and password you use for your Schlage account (schlage.com or the Schlage Home app).</p>
-        <p><strong>Step 2 — Your locks are loaded</strong><br/>
-        After logging in, the app reads your locks from Schlage's servers and displays them on the Access Codes page. This may take a few seconds.</p>
-        <p><strong>Step 3 — Create groups</strong><br/>
-        Go to the <strong>Groups</strong> tab and create a group. Assign one lock as the parent and add child locks. Codes added to the parent will sync to all children.</p>
-        <p class="help-note">💡 You can be connected to only one Schlage account at a time on a single app instance.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Disconnecting / Resetting the App</h2>
-        <p>If you want to remove your Schlage account from this app, click your avatar in the top-right corner and choose <strong>Disconnect &amp; Clear All Data</strong>.</p>
-        <p>This will:</p>
-        <ul style="margin-left:20px;line-height:1.8">
-          <li>Remove your stored Schlage credentials</li>
-          <li>Delete all groups, locks, and access codes</li>
-          <li>Clear all sync schedules and history</li>
-        </ul>
-        <p>After disconnecting you will see the blank login screen. Your Schlage account itself is unaffected — you are only removing the connection between this app and your Schlage account.</p>
-        <p class="help-note">⚠️ This action cannot be undone. All local data will be permanently deleted.</p>
-        <p><strong>Note:</strong> This app is designed for single-user deployment on a personal server. It is not intended for shared multi-user environments.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>How It Works</h2>
-        <p>This app manages Schlage smart lock access codes across groups of locks. The core function is simple: <strong>changes to a parent lock automatically sync to all child locks</strong> in the same group.</p>
-        <p>When you add, update, or delete a code on the parent lock, the app detects the change and propagates it to every child lock in that group — automatically, on a schedule you define.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Parent vs Child Locks</h2>
-        <p><strong>Parent lock</strong> — The primary lock in a group. You manage codes directly on this lock. All code changes originate here.</p>
-        <p><strong>Child lock</strong> — A companion lock in the same group. It receives code updates from the parent automatically. You should not manage codes directly on child locks.</p>
-        <p class="help-note">⚠️ Only add, edit, or delete codes on the parent lock. Direct changes to child locks will conflict with the sync system.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Groups</h2>
-        <p>A group is a collection of one parent lock and one or more child locks that share the same access codes. All locks in a group stay in sync based on the parent lock's state.</p>
-        <p>To set up a group: go to the <strong>Groups</strong> tab, click <strong>New Group</strong>, name it, select a lock to be the parent, then add child locks from the available locks list.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Setup</h2>
-        <p><strong>Step 1 — Create a group</strong><br/>
-        Go to <strong>Groups</strong> → <strong>New Group</strong>. Give it a name (e.g., "Rodriquez" or "Old Woods").</p>
-        <p><strong>Step 2 — Set the parent lock</strong><br/>
-        Choose which lock will be the parent. This is the lock you physically manage codes on.</p>
-        <p><strong>Step 3 — Add child locks</strong><br/>
-        Select one or more locks to be children. These will mirror the parent lock's codes automatically.</p>
-        <p><strong>Step 4 — Enable auto sync</strong><br/>
-        Go to <strong>Sync</strong> → select your group → set check times → click <strong>Save Schedule</strong>. The scheduler will run on your configured times.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Manual Sync</h2>
-        <p>When you want to trigger a sync immediately without waiting for the schedule:</p>
-        <p><strong>Step 1 — Refresh</strong><br/>
-        Click the <strong>Refresh</strong> button on the Access Codes page. This pulls the latest codes from Schlage for all locks and updates the local database.</p>
-        <p><strong>Step 2 — Force Sync</strong><br/>
-        Go to the <strong>Sync</strong> page and click <strong>Force Sync</strong>. This executes any pending jobs — creating, updating, or deleting codes on child locks to match the parent.</p>
-        <p class="help-note">💡 Always run Refresh first, then Force Sync. Never skip Refresh — it detects what changes need to be made.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Auto Sync (Check Times)</h2>
-        <p>Check times define when the app automatically runs a sync for a group. You set them in the <strong>Sync</strong> tab.</p>
-        <p>When a check time fires, the app automatically runs <strong>Refresh</strong> then <strong>Force Sync</strong> — no manual action needed.</p>
-
-        <h3>Adding check times one at a time</h3>
-        <p>Use the time input and <strong>Add</strong> button to add individual check times. These are added on top of any existing times — they never overwrite what you already have set.</p>
-
-        <h3>Quick Set — adding 144 times at once</h3>
-        <p>If you want to check every 10 minutes throughout the day, use the <strong>Quick Set</strong> buttons. Click a digit (0–9) and the app instantly sets 144 check times — one at the same minute offset every hour (e.g., clicking <strong>5</strong> sets times like 00:05, 00:15, 00:25 ... 23:55).</p>
-        <p class="help-note">⚠️ <strong>Important:</strong> Using Quick Set replaces all existing check times with the new 144. If you have manually added custom times and then use Quick Set, those custom times will be removed and you'll be back to 144.</p>
-        <p>Quick Set is best used when starting fresh — set your 144 times, then use the individual Add button to add any additional custom times on top.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Access Codes — Important Rules</h2>
-        <p><strong>All codes must live on the parent lock.</strong> If a code exists on the parent, it will sync to all children. If a code is only on a child lock and not on the parent, it will be deleted on the next sync.</p>
-        <p><strong>Never create codes directly on child locks.</strong> Always add them to the parent lock first. The app manages child codes automatically — you don't need to touch them.</p>
-        <p><strong>Keep all locks in a group at the same codes.</strong> The system assumes every lock in a group has identical codes. Mismatches will trigger sync jobs to reconcile them.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Sync Jobs</h2>
-        <p>When a difference is detected between parent and child, the app creates sync jobs:</p>
-        <p><strong>Create</strong> — A code on the parent doesn't exist on a child. The app adds it to the child.</p>
-        <p><strong>Update</strong> — A code exists on both but the value or schedule differs. The app updates the child to match the parent.</p>
-        <p><strong>Delete</strong> — A code on the parent was removed, or a code exists on a child that isn't on the parent. The app removes it from the child.</p>
-        <p>Pending jobs can be viewed in the <strong>Sync</strong> tab. Jobs are executed in order when Force Sync runs.</p>
-      </section>
-
-      <section class="help-section">
-        <h2>Troubleshooting</h2>
-        <p><strong>Child locks aren't syncing</strong><br/>
-        1. Make sure codes are on the parent lock, not just the child.<br/>
-        2. Check that the group has a schedule with check times enabled.<br/>
-        3. Try running Refresh then Force Sync manually.<br/>
-        4. Look at the Sync tab — are there pending jobs? Any failed ones?</p>
-        <p><strong>Sync jobs keep failing</strong><br/>
-        This usually means Schlage's API had a temporary issue. Most failures resolve on the next auto sync. If a code keeps failing, it may be blocked in Schlage's system — try deleting the code and re-adding it on the parent lock.</p>
-        <p><strong>Code keeps getting recreated</strong><br/>
-        Check for a case mismatch — if the code name differs slightly between locks (e.g., "Team Backapd" vs "Team backapd"), the app treats them as different codes and keeps trying to sync.</p>
-      </section>
-
-    </div>
-  `;
-}

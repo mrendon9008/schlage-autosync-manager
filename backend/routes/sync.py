@@ -11,7 +11,7 @@ Provides endpoints for:
 import logging
 import sqlite3
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional
 
 from backend.database import init_db, get_db
 
@@ -134,23 +134,20 @@ def list_schedules(request: Request) -> dict:
 
 
 @router.post("/schedules", status_code=status.HTTP_201_CREATED)
-def upsert_schedule(request: Request,
+def upsert_schedule(request: Request, 
     group_id: int = Query(...),
     cronspec: str = Query(default="0 */15 * * * *"),
     enabled: bool = Query(default=True),
     check_time: str = Query(default=None),
-    check_times: Optional[dict] = Body(default=None),
     master_lock_id: str = Query(default=None),
 ) -> dict:
     """
     Create or update a sync schedule for a group.
 
     One schedule per group — re-creating updates the existing schedule.
-    Pass check_time to add a single time to the schedule's check_times list.
-    Pass check_times (JSON array) to set/replace all check_times at once.
+    Pass check_time to add a time to the schedule's check_times list.
     Pass master_lock_id to set the master lock for this group.
     """
-    import json
     session = _require_auth(request)
 
     # Verify group exists
@@ -160,19 +157,16 @@ def upsert_schedule(request: Request,
             raise HTTPException(status_code=404, detail="Group not found")
 
     with db_cursor() as cur:
-        if check_times is not None and isinstance(check_times, dict) and "check_times" in check_times:
-            # Bulk set — replace all check_times with the provided array
-            check_times_json = json.dumps(check_times["check_times"])
-        elif check_time:
-            # Add single time to existing or new schedule
+        if check_time:
+            # Add time to existing or new schedule
             cur.execute("SELECT check_times FROM sync_schedules WHERE group_id = ?", (group_id,))
             row = cur.fetchone()
+            import json
             times = json.loads(row["check_times"]) if row and row["check_times"] else []
             if check_time not in times:
                 times.append(check_time)
             check_times_json = json.dumps(times)
         else:
-            # Load existing (no change requested)
             cur.execute("SELECT check_times FROM sync_schedules WHERE group_id = ?", (group_id,))
             row = cur.fetchone()
             check_times_json = row["check_times"] if row and row["check_times"] else "[]" if row else "[]"
@@ -499,11 +493,11 @@ def list_sync_jobs(request: Request, group_id: int) -> dict:
                   sj.created_at,
                   sj.updated_at,
                   sj.completed_at,
-                  COALESCE(sj.code_name, ac.name) AS code_name,
+                  ac.name        AS code_name,
                   ac.code_value  AS code_value,
                   gl.lock_name   AS target_lock_name
                FROM sync_jobs sj
-               LEFT JOIN access_codes ac ON ac.id = sj.access_code_id
+               JOIN access_codes ac ON ac.id = sj.access_code_id
                JOIN group_locks  gl ON gl.id = sj.target_lock_id
                WHERE sj.group_id = ? AND sj.state != 'deleted'
                ORDER BY sj.created_at DESC""",
@@ -635,7 +629,7 @@ def run_sync_from_jobs(
                   sj.access_code_id,
                   sj.target_lock_id,
                   sj.action,
-                  COALESCE(sj.code_name, ac.name) AS code_name,
+                  ac.name          AS code_name,
                   ac.code_value    AS code_value,
                   ac.is_always_valid,
                   ac.start_datetime,
@@ -644,7 +638,7 @@ def run_sync_from_jobs(
                   gl.lock_id       AS target_device_id,
                   ac.schlage_lock_id AS source_lock_id
                FROM sync_jobs sj
-               LEFT JOIN access_codes ac ON ac.id = sj.access_code_id
+               JOIN access_codes ac ON ac.id = sj.access_code_id
                JOIN group_locks  gl ON gl.id = sj.target_lock_id
                WHERE sj.group_id = ? AND sj.state = 'pending'
                ORDER BY sj.target_lock_id, sj.sequence""",
@@ -679,7 +673,7 @@ def run_sync_from_jobs(
         for job in jobs:
             job_id       = job["job_id"]
             access_code_id = job["access_code_id"]
-            target_device_id = job["target_lock_id"]
+            target_lock_local_id = job["target_lock_id"]
             target_device_id = job["target_device_id"]
             action        = job["action"]
             code_name     = job["code_name"]
@@ -769,24 +763,6 @@ def run_sync_from_jobs(
                                 "create job %s: failed to remove existing code: %s",
                                 job_id, del_err,
                             )
-
-
-                    # ── UC3 guard: skip CREATE if parent code was deleted from master ──
-                    parent_row = conn.execute(
-                        "SELECT id FROM access_codes WHERE id = ?",
-                        (access_code_id,),
-                    ).fetchone()
-                    if not parent_row:
-                        logger.info("run_sync_from_jobs CREATE: job_id=%s skipped — parent code %s was deleted from master",
-                                   job_id, access_code_id)
-                        conn.execute(
-                            "UPDATE sync_jobs SET state = 'skipped', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                            (job_id,),
-                        )
-                        conn.commit()
-                        results["skipped"] += 1
-                        continue
-                    # ──────────────────────────────────────────────────────────────
 
                     logger.info("run_sync_from_jobs CREATE: job_id=%s device=%s name=%s code=%s",
                                job_id, target_device_id, code_name, code_value)
@@ -902,31 +878,23 @@ def run_sync_from_jobs(
                     sync_success = True
 
                 elif action == "delete":
-                    # Resolve lock UUID from group_locks integer id before querying access_codes
-                    gl_row = conn.execute(
-                        "SELECT lock_id FROM group_locks WHERE lock_id = ?",
-                        (target_device_id,),
-                    ).fetchone()
-                    if not gl_row:
-                        raise Exception(f"group_locks id {target_device_id} not found")
-                    resolved_lock_id = gl_row["lock_id"]
                     # Find the existing code on target — match by (lock, name) regardless of sync linkage
                     existing = conn.execute(
                         """SELECT id, schlage_code_id FROM access_codes
                            WHERE schlage_lock_id = ?
                              AND name = ?""",
-                        (resolved_lock_id, code_name),
+                        (target_device_id, code_name),
                     ).fetchone()
 
                     logger.info("run_sync_from_jobs DELETE: job_id=%s device=%s code_id=%s name=%s",
-                               job_id, resolved_lock_id, existing["schlage_code_id"] if existing else None, code_name)
+                               job_id, target_device_id, existing["schlage_code_id"] if existing else None, code_name)
                     if existing and existing["schlage_code_id"]:
                         session.delete_access_code(
-                            device_id=resolved_lock_id,
+                            device_id=target_device_id,
                             code_id=existing["schlage_code_id"],
                         )
                         logger.info("run_sync_from_jobs DELETE SUCCESS: job_id=%s device=%s",
-                                   job_id, resolved_lock_id)
+                                   job_id, target_device_id)
                         # Remove the local record
                         conn.execute(
                             "DELETE FROM access_codes WHERE id = ?",
@@ -977,22 +945,19 @@ def run_sync_from_jobs(
 
             # Write sync_code_history with sync_job_id
             history_status = "success" if sync_success else "failed"
-            try:
-                conn.execute(
-                    """INSERT INTO sync_code_history
-                       (group_id, source_lock_id, source_code_id, source_code_name,
-                        source_code_value, target_lock_id, target_code_id,
-                        action, status, skip_reason,
-                        source_is_always_valid, source_start_datetime,
-                        source_end_datetime, sync_job_id)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (group_id, source_lock_id, access_code_id, code_name,
-                     code_value, target_device_id, target_code_id_record,
-                     action, history_status, error_msg,
-                     int(is_always), start_dt, end_dt, job_id),
-                )
-            except Exception as e:
-                logger.warning("sync_code_history INSERT failed for job %s: %s", job_id, e)
+            conn.execute(
+                """INSERT INTO sync_code_history
+                   (group_id, source_lock_id, source_code_id, source_code_name,
+                    source_code_value, target_lock_id, target_code_id,
+                    action, status, skip_reason,
+                    source_is_always_valid, source_start_datetime,
+                    source_end_datetime, sync_job_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (group_id, source_lock_id, access_code_id, code_name,
+                 code_value, target_device_id, target_code_id_record,
+                 action, history_status, error_msg,
+                 int(is_always), start_dt, end_dt, job_id),
+            )
             conn.commit()
 
     finally:
@@ -1003,399 +968,3 @@ def run_sync_from_jobs(
         "dry_run": dry_run,
         **results,
     }
-
-# ── Scheduler-friendly sync (no Request object) ─────────────────────────────
-
-
-def _scheduler_run_sync_jobs(group_id: int, dry_run: bool = False) -> dict:
-    """
-    Standalone version of run_sync_from_jobs for scheduler use.
-    No Request object — uses stored session token + encrypted credentials from DB.
-    Auth flow: get token → get encrypted creds → build session → login.
-    """
-    import os
-    from backend.database import get_db
-    from backend.auth import get_session_by_token, decrypt_password, SchlageSession
-
-    logger.info("_scheduler_run_sync_jobs: group=%s dry_run=%s", group_id, dry_run)
-
-    # ── Acquire sync lock ──────────────────────────────────────────────
-    lock_path = f"/tmp/schlage_sync_lock_{group_id}.lock"
-    lock_acquired = False
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
-        lock_acquired = True
-        logger.info("_scheduler_run_sync_jobs: lock acquired %s", lock_path)
-    except FileExistsError:
-        logger.warning("_scheduler_run_sync_jobs: lock already held for group %s", group_id)
-        return {"status": "locked", "message": "Sync already in progress for this group"}
-    except Exception as e:
-        logger.error("_scheduler_run_sync_jobs: lock error: %s", e)
-        return {"status": "error", "message": str(e)}
-
-    try:
-        # ── Auth: get token + encrypted creds in one DB connection ─────
-        conn = get_db()
-        try:
-            row = conn.execute(
-                """SELECT us.session_token, us.username
-                   FROM user_sessions us
-                   JOIN credentials c ON c.username = us.username
-                   WHERE c.is_owner = 1
-                   ORDER BY us.last_active_at DESC LIMIT 1"""
-            ).fetchone()
-            if not row:
-                logger.error("_scheduler_run_sync_jobs: no active owner session")
-                return {"status": "error", "message": "no active session found"}
-            session_token = row["session_token"]
-            username = row["username"]
-
-            enc_row = conn.execute(
-                "SELECT encrypted_password, nonce FROM credentials WHERE username = ?",
-                (username,)
-            ).fetchone()
-            if not enc_row:
-                logger.error("_scheduler_run_sync_jobs: no credentials found for %s", username)
-                return {"status": "error", "message": "No credentials found"}
-            encrypted_password = enc_row["encrypted_password"]
-            nonce = enc_row["nonce"]
-        finally:
-            conn.close()
-
-        # Build session with encrypted creds so login() works
-        session = SchlageSession(username)
-        session._encrypted_password = encrypted_password
-        session._nonce = nonce
-        session._session_token = session_token
-        session.login()
-        logger.info("_scheduler_run_sync_jobs: authenticated as %s", username)
-
-        # ── Verify group exists ─────────────────────────────────────────
-        with db_cursor() as cur:
-            cur.execute("SELECT id FROM `groups` WHERE id = ?", (group_id,))
-            if not cur.fetchone():
-                logger.error("_scheduler_run_sync_jobs: group %s not found", group_id)
-                return {"status": "error", "message": "Group not found"}
-
-        # ── Get all pending jobs (same query as HTTP version) ───────────
-        with db_cursor() as cur:
-            cur.execute(
-                """SELECT
-                      sj.id            AS job_id,
-                      sj.access_code_id,
-                      sj.target_lock_id,
-                      sj.action,
-                      COALESCE(sj.code_name, ac.name) AS code_name,
-                      ac.code_value    AS code_value,
-                      ac.is_always_valid,
-                      ac.start_datetime,
-                      ac.end_datetime,
-                      gl.lock_id       AS target_device_id,
-                      ac.schlage_lock_id AS source_lock_id
-                   FROM sync_jobs sj
-                   LEFT JOIN access_codes ac ON ac.id = sj.access_code_id
-                   JOIN group_locks  gl ON gl.id = sj.target_lock_id
-                   WHERE sj.group_id = ? AND sj.state = 'pending'
-                   ORDER BY sj.target_lock_id, sj.sequence""",
-                (group_id,),
-            )
-            jobs = [dict(r) for r in cur.fetchall()]
-
-        if not jobs:
-            logger.info("_scheduler_run_sync_jobs: no pending jobs for group %s", group_id)
-            return {"message": "No pending jobs", "executed": 0, "created": 0,
-                   "updated": 0, "deleted": 0, "skipped": 0, "failed": 0}
-
-        logger.info("_scheduler_run_sync_jobs: %d pending jobs for group %s", len(jobs), group_id)
-        results = {"executed": 0, "created": 0, "updated": 0,
-                   "deleted": 0, "skipped": 0, "failed": 0, "errors": []}
-
-        # ── Execute jobs (identical to run_sync_from_jobs) ──────────────
-        conn = get_db()
-        try:
-            for job in jobs:
-                job_id            = job["job_id"]
-                access_code_id    = job["access_code_id"]
-                target_device_id = job["target_device_id"]
-                action           = job["action"]
-                code_name        = job["code_name"]
-                code_value       = job["code_value"]
-                is_always        = bool(job["is_always_valid"])
-                start_dt         = job["start_datetime"]
-                end_dt           = job["end_datetime"]
-                source_lock_id   = job["source_lock_id"]
-
-                if dry_run:
-                    results["executed"] += 1
-                    if action == "create":   results["created"] += 1
-                    elif action == "update": results["updated"] += 1
-                    elif action == "delete": results["deleted"] += 1
-                    conn.execute(
-                        "UPDATE sync_jobs SET state='pending', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                        (job_id,))
-                    conn.commit()
-                    continue
-
-                conn.execute(
-                    "UPDATE sync_jobs SET state='running', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (job_id,))
-                conn.commit()
-
-                error_msg          = None
-                sync_success       = False
-                target_code_record = None
-
-                try:
-                    if action == "create":
-                        # Clean up any existing unsynced code with the same name on this lock
-                        existing_unsynced = conn.execute(
-                            """SELECT id, schlage_code_id FROM access_codes
-                               WHERE schlage_lock_id = ? AND name = ?
-                                 AND synced_from_code_id IS NULL""",
-                            (target_device_id, code_name),
-                        ).fetchone()
-                        if existing_unsynced and existing_unsynced["schlage_code_id"]:
-                            try:
-                                session.delete_access_code(
-                                    device_id=target_device_id,
-                                    code_id=existing_unsynced["schlage_code_id"],
-                                )
-                                conn.execute("DELETE FROM access_codes WHERE id = ?",
-                                            (existing_unsynced["id"],))
-                                logger.info("create job %s: removed existing unsynced code '%s'",
-                                           job_id, code_name)
-                            except Exception as del_err:
-                                logger.warning("create job %s: failed to remove existing code: %s",
-                                               job_id, del_err)
-
-                        # UC3 guard: skip CREATE if parent code was deleted from master
-                        parent_row = conn.execute(
-                            "SELECT id FROM access_codes WHERE id = ?",
-                            (access_code_id,),
-                        ).fetchone()
-                        if not parent_row:
-                            logger.info("_scheduler_run_sync_jobs CREATE: job_id=%s skipped — "
-                                       "parent code %s was deleted from master",
-                                       job_id, access_code_id)
-                            conn.execute(
-                                "UPDATE sync_jobs SET state='skipped', updated_at=CURRENT_TIMESTAMP "
-                                "WHERE id=?", (job_id,))
-                            conn.commit()
-                            results["skipped"] += 1
-                            continue
-
-                        logger.info("_scheduler_run_sync_jobs CREATE: job_id=%s device=%s name=%s",
-                                   job_id, target_device_id, code_name)
-                        result = session.create_access_code(
-                            device_id=target_device_id, name=code_name, code=code_value,
-                            is_always_valid=is_always, start_datetime=start_dt, end_datetime=end_dt)
-                        target_code_record = result.get("code_id")
-                        logger.info("_scheduler_run_sync_jobs CREATE SUCCESS: job_id=%s code_id=%s",
-                                   job_id, target_code_record)
-
-                        conn.execute(
-                            """DELETE FROM access_codes
-                               WHERE schlage_lock_id = ? AND name = ?
-                                 AND (synced_from_code_id = ? OR synced_from_code_id IS NULL)""",
-                            (target_device_id, code_name, access_code_id))
-                        conn.execute(
-                            """INSERT INTO access_codes
-                               (name, code_value, group_id, is_always_valid,
-                                start_datetime, end_datetime, schlage_lock_id, schlage_code_id,
-                                is_synced, sync_opt_out, synced_from_code_id, synced_from_lock_id)
-                               VALUES (?,?,?,?,?,?,?,?,1,0,?,?)""",
-                            (code_name, code_value, group_id, int(is_always),
-                             start_dt, end_dt, target_device_id, target_code_record,
-                             access_code_id, source_lock_id))
-                        sync_success = True
-
-                    elif action == "update":
-                        existing = conn.execute(
-                            """SELECT id, schlage_code_id FROM access_codes
-                               WHERE schlage_lock_id = ? AND synced_from_code_id = ?
-                                 AND synced_from_lock_id = ?""",
-                            (target_device_id, access_code_id, source_lock_id),
-                        ).fetchone()
-                        if existing and existing["schlage_code_id"]:
-                            try:
-                                session.delete_access_code(
-                                    device_id=target_device_id,
-                                    code_id=existing["schlage_code_id"],
-                                )
-                            except Exception as del_err:
-                                logger.warning("update: delete old code failed: %s", del_err)
-
-                        logger.info("_scheduler_run_sync_jobs CREATE: job_id=%s device=%s name=%s",
-                                   job_id, target_device_id, code_name)
-                        result = session.create_access_code(
-                            device_id=target_device_id, name=code_name, code=code_value,
-                            is_always_valid=is_always, start_datetime=start_dt, end_datetime=end_dt)
-                        target_code_record = result.get("code_id")
-                        logger.info("_scheduler_run_sync_jobs CREATE SUCCESS: job_id=%s code_id=%s",
-                                   job_id, target_code_record)
-
-                        existing_child = conn.execute(
-                            """SELECT id FROM access_codes
-                               WHERE schlage_lock_id = ? AND name = ?""",
-                            (target_device_id, code_name),
-                        ).fetchone()
-                        if existing_child:
-                            conn.execute(
-                                """UPDATE access_codes SET code_value=?, is_always_valid=?,
-                                   start_datetime=?, end_datetime=?, schlage_code_id=?,
-                                   synced_from_code_id=?, synced_from_lock_id=?, is_synced=1
-                                   WHERE id = ?""",
-                                (code_value, int(is_always), start_dt, end_dt,
-                                 target_code_record, access_code_id, source_lock_id,
-                                 existing_child["id"]))
-                        else:
-                            conn.execute(
-                                """INSERT INTO access_codes
-                                   (name, code_value, group_id, is_always_valid,
-                                    start_datetime, end_datetime, schlage_lock_id, schlage_code_id,
-                                    is_synced, sync_opt_out, synced_from_code_id, synced_from_lock_id)
-                                   VALUES (?,?,?,?,?,?,?,?,1,0,?,?)""",
-                                (code_name, code_value, group_id, int(is_always),
-                                 start_dt, end_dt, target_device_id, target_code_record,
-                                 access_code_id, source_lock_id))
-                        sync_success = True
-
-                    elif action == "delete":
-                        # Resolve lock UUID from group_locks integer id before querying access_codes
-                        gl_row = conn.execute(
-                            "SELECT lock_id FROM group_locks WHERE lock_id = ?",
-                            (target_device_id,),
-                        ).fetchone()
-                        if not gl_row:
-                            raise Exception(f"group_locks id {target_device_id} not found")
-                        resolved_lock_id = gl_row["lock_id"]
-                        existing = conn.execute(
-                            """SELECT id, schlage_code_id FROM access_codes
-                               WHERE schlage_lock_id = ? AND name = ?""",
-                            (resolved_lock_id, code_name),
-                        ).fetchone()
-                        logger.info("_scheduler_run_sync_jobs DELETE: job_id=%s device=%s code=%s name=%s",
-                                   job_id, resolved_lock_id,
-                                   existing["schlage_code_id"] if existing else None, code_name)
-                        if existing and existing["schlage_code_id"]:
-                            session.delete_access_code(
-                                device_id=resolved_lock_id,
-                                code_id=existing["schlage_code_id"],
-                            )
-                            conn.execute("DELETE FROM access_codes WHERE id = ?",
-                                        (existing["id"],))
-                        sync_success = True
-
-                except Exception as e:
-                    error_msg = str(e)
-                    logger.error("_scheduler_run_sync_jobs: job %s failed: %s", job_id, e)
-
-                if sync_success:
-                    conn.execute(
-                        """UPDATE sync_jobs
-                           SET state='completed', completed_at=CURRENT_TIMESTAMP,
-                               updated_at=CURRENT_TIMESTAMP WHERE id=?""", (job_id,))
-                    results["executed"] += 1
-                    if action == "create":
-                        results["created"] += 1
-                        conn.execute(
-                            "UPDATE access_codes SET is_synced=1 WHERE id=?", (access_code_id,))
-                    elif action == "update":
-                        results["updated"] += 1
-                        conn.execute(
-                            "UPDATE access_codes SET is_synced=1 WHERE id=?", (access_code_id,))
-                    elif action == "delete":
-                        results["deleted"] += 1
-                else:
-                    conn.execute(
-                        """UPDATE sync_jobs
-                           SET state='failed', error_message=?, updated_at=CURRENT_TIMESTAMP
-                           WHERE id=?""", (error_msg, job_id))
-                    results["failed"] += 1
-                    results["errors"].append(f"[job {job_id}] {error_msg}")
-
-                # Write sync_code_history
-                h_status = "success" if sync_success else "failed"
-                try:
-                    conn.execute(
-                        """INSERT INTO sync_code_history
-                           (group_id, source_lock_id, source_code_id, source_code_name,
-                            source_code_value, target_lock_id, target_code_id, action, status,
-                            skip_reason, source_is_always_valid, source_start_datetime,
-                            source_end_datetime, sync_job_id)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                        (group_id, source_lock_id, access_code_id, code_name,
-                         code_value, target_device_id, target_code_record, action, h_status,
-                         error_msg, int(is_always), start_dt, end_dt, job_id))
-                except Exception as e:
-                    logger.warning("_scheduler_run_sync_jobs history INSERT failed job %s: %s",
-                                 job_id, e)
-                conn.commit()
-
-        finally:
-            conn.close()
-
-        logger.info("_scheduler_run_sync_jobs: group %s done — %s", group_id, results)
-        return {"message": "Sync complete", **results}
-
-    finally:
-        if lock_acquired:
-            try:
-                os.remove(lock_path)
-                logger.info("_scheduler_run_sync_jobs: lock released")
-            except Exception as e:
-                logger.warning("_scheduler_run_sync_jobs: lock release failed: %s", e)
-
-from fastapi import Form
-from backend.sync_logic import SyncEngine
-
-@router.post("/admin/test-sync")
-async def test_sync(request: Request, group_id: int = Form(...)):
-    """Trigger discover + force sync for a group (bypasses scheduler)."""
-    import os
-    from backend.sync_logic import SyncEngine
-    from backend.database import DB_PATH
-    import pyschlage
-    from backend.auth import get_session_by_token, decrypt_password
-
-    logger.info("test_sync: group=%s", group_id)
-
-    # Get session and credentials
-    conn = get_db()
-    try:
-        row = conn.execute(
-            """SELECT us.session_token, us.username
-               FROM user_sessions us JOIN credentials c ON c.username = us.username
-               WHERE c.is_owner = 1 ORDER BY us.last_active_at DESC LIMIT 1"""
-        ).fetchone()
-        if not row:
-            return {"status": "error", "message": "No active session"}
-        session_token = row["session_token"]
-        username = row["username"]
-        enc_row = conn.execute(
-            "SELECT encrypted_password, nonce FROM credentials WHERE username = ?",
-            (username,)
-        ).fetchone()
-    finally:
-        conn.close()
-
-    encrypted_creds = {
-        "_encrypted_password": enc_row["encrypted_password"],
-        "_nonce": enc_row["nonce"],
-    }
-    decrypted_password = decrypt_password(enc_row["encrypted_password"], enc_row["nonce"])
-    creds = {"username": username, "password": decrypted_password}
-    engine = SyncEngine(str(DB_PATH), pyschlage, creds, encrypted_creds=encrypted_creds)
-
-    try:
-        engine.discover_codes(group_ids=[group_id])
-    except Exception as e:
-        logger.error("test_sync discover_codes failed: %s", e, exc_info=True)
-        return {"status": "error", "message": f"discover_codes failed: {e}"}
-
-    logger.info("test_sync: discover_codes done, running sync_jobs")
-    result = _scheduler_run_sync_jobs(group_id)
-    return {"status": "ok", **result}
-

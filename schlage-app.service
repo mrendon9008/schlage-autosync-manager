@@ -1,0 +1,19 @@
+[Unit]
+Description=Schlage Lock Management App
+After=network.target
+
+[Service]
+Type=simple
+User=mike
+Group=mike
+WorkingDirectory=/data/.openclaw/workspace/projects/schlage-app
+Environment="PATH=/data/.openclaw/workspace/projects/schlage-app/venv/bin"
+EnvironmentFile=/data/.openclaw/workspace/projects/schlage-app/.env
+ExecStart=/data/.openclaw/workspace/projects/schlage-app/start.sh
+Restart=on-failure
+RestartSec=5s
+StandardOutput=append:/data/.openclaw/workspace/projects/schlage-app/logs/app.log
+StandardError=append:/data/.openclaw/workspace/projects/schlage-app/logs/app.log
+
+[Install]
+WantedBy=multi-user.target

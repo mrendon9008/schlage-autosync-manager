@@ -183,6 +183,29 @@ def migrate_sync_schema() -> None:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sch_source ON sync_code_history(source_lock_id, source_code_name)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_sch_identity ON sync_code_history(source_code_name, source_code_value)")
 
+        # ── Create sync_jobs ────────────────────────────────────────────────────────
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS sync_jobs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id            INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+                access_code_id      INTEGER REFERENCES access_codes(id) ON DELETE SET NULL,
+                code_name          TEXT,
+                action              TEXT NOT NULL,
+                state               TEXT NOT NULL DEFAULT 'pending',
+                target_lock_id      INTEGER,
+                source_lock_id      TEXT,
+                job_group           TEXT,
+                sequence            INTEGER NOT NULL DEFAULT 0,
+                error               TEXT,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+
+        # ── Indexes for sync_jobs ──────────────────────────────────────────────────
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_jobs_group_state ON sync_jobs(group_id, state)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_sync_jobs_lock_sequence ON sync_jobs(target_lock_id, sequence)")
+
 
 def delete_expired_sessions() -> int:
     """Delete all sessions whose expires_at < now. Returns count deleted."""

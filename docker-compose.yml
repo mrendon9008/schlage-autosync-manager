@@ -11,9 +11,10 @@ services:
       - "traefik.http.routers.schlage-docker.entrypoints=websecure"
       - "traefik.http.routers.schlage-docker.tls=true"
       - "traefik.http.services.schlage-docker.loadbalancer.server.port=8000"
-    networks:
-      traefik-br8b_default:
-        external: true
+
+networks:
+  traefik-br8b_default:
+    external: true
 
 volumes:
   schlage-data:

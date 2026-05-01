@@ -4,21 +4,16 @@
 
 set -e
 
-APP_DIR="/root/schlage-app"
-VENV_DIR="/root/schlage-app/venv"
-LOG_FILE="${APP_DIR}/logs/app.log"
-
-# Load env vars
-if [ -f "${APP_DIR}/.env" ]; then
-    set -a
-    source "${APP_DIR}/.env"
-    set +a
-fi
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$SCRIPT_DIR"
+VENV_DIR="$APP_DIR/venv"
+LOG_FILE="$APP_DIR/logs/app.log"
 
 # Check venv exists
-if [ ! -d "${VENV_DIR}" ]; then
-    echo "ERROR: Virtual environment not found at ${VENV_DIR}"
-    echo "Run: python3 -m venv ${VENV_DIR} && source ${VENV_DIR}/bin/activate && pip install -r ${APP_DIR}/requirements.txt"
+if [ ! -d "$VENV_DIR" ]; then
+    echo "ERROR: Virtual environment not found at $VENV_DIR"
+    echo "Run: python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt"
     exit 1
 fi
 
@@ -26,13 +21,12 @@ fi
 mkdir -p "$(dirname "$LOG_FILE")"
 
 # Activate venv and start uvicorn
-# Use exec to replace shell so signals pass through; capture logs via script
-cd "${APP_DIR}"
+cd "$APP_DIR"
 echo "[$(date)] Starting Schlage app..." >> "$LOG_FILE"
-exec ${VENV_DIR}/bin/python -c "
+exec "$VENV_DIR/bin/python" -c "
 import os, sys
-os.environ['PYTHONPATH'] = '/root/schlage-app'
-os.environ['APP_DIR'] = '/root/schlage-app'
+os.environ[PYTHONPATH] = 
+os.environ[APP_DIR] = 
 import uvicorn
-uvicorn.run('backend.main:app', host='0.0.0.0', port=8000, log_level='info')
+uvicorn.run(backend.main:app, host=0.0.0.0, port=8000, log_level=info)
 " >> "$LOG_FILE" 2>&1

@@ -1,6 +1,6 @@
 # Schlage Auto-Sync Manager
 
-Self-hosted Schlage lock manager — save money evert month on property management smart lock fees.
+Self-hosted Schlage lock manager — save money every month on property management smart lock fees.
 
 Most rental platforms and property management systems charge per lock for access code management. If you have multiple locks on one property, you're paying for each one. This application allows you to only pay for one lock (parent lock) per rental. Any other locks (child locks) at the rental automatically inherit access code creations, edits, and deletions. Making it unnecssary to pay for more than one lock per rental.
 
